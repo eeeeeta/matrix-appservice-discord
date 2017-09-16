@@ -140,7 +140,9 @@ export class DiscordStore {
       },
     ).then( (rows) => {
       if(rows !== undefined) {
-        rows.map((row) => row.discord_id);
+	let n = [];
+	rows.forEach((row) => n.push(row.discord_id));
+	return n;
       } else {
         return [];
       }

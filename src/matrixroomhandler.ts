@@ -50,6 +50,14 @@ export class MatrixRoomHandler {
     let promiseChain: any = Bluebird.resolve();
     let delay = JOIN_DELAY; /* We delay the joins to give some implmentations a chance to breathe */
     return this.discord.GetChannelFromRoomId(roomId).then((channel: Discord.Channel) => {
+      if (channel.type == "dm") {
+        const member = channel.recipient;
+        const intent = this.bridge.getIntentFromLocalpart(`_discord_${member.id}`);
+        promiseChain = promiseChain.return(Bluebird.delay(delay).then(() => {
+          return intent.join(roomId);
+        }));
+        return;
+      }
       for (const member of (<Discord.TextChannel> channel).guild.members.array()) {
         if (member.id === this.discord.GetBotId()) {
           continue;
@@ -90,7 +98,7 @@ export class MatrixRoomHandler {
   }
 
   public OnAliasQuery (alias: string, aliasLocalpart: string): Promise<any> {
-    log.info("MatrixRoomHandler", "Got request for #", aliasLocalpart);
+    log.verbose("MatrixRoomHandler", "Got request for #", aliasLocalpart);
     const srvChanPair = aliasLocalpart.substr("_discord_".length).split("_", ROOM_NAME_PARTS);
     if (srvChanPair.length < ROOM_NAME_PARTS || srvChanPair[0] === "" || srvChanPair[1] === "") {
       log.warn("MatrixRoomHandler", `Alias '${aliasLocalpart}' was missing a server and/or a channel`);
@@ -168,16 +176,32 @@ export class MatrixRoomHandler {
   }
 
   private createMatrixRoom (channel: Discord.TextChannel, alias: string) {
-    const remote = new RemoteRoom(`discord_${channel.guild.id}_${channel.id}`);
-    remote.set("discord_type", "text");
-    remote.set("discord_guild", channel.guild.id);
-    remote.set("discord_channel", channel.id);
+    var firstpart = channel.type;
+    var lastpart = channel.id;
+    if (channel.type == "text") {
+        firstpart = channel.guild.id;
+    }
+    if (channel.type = "dm") {
+        lastpart = channel.recipient.id;
+    }
+    const remote = new RemoteRoom(`discord_${firstpart}_${lastpart}`);
+    var name = "[Discord] Unknown ${channel.type} room";
+    remote.set("discord_type", channel.type);
+    if (channel.type == "text") {
+    	remote.set("discord_guild", channel.guild.id);
+        remote.set("discord_channel", channel.id);
+        name = `[Discord] ${channel.guild.name} #${channel.name}`;
+    }
+    else if (channel.type == "dm") {
+        remote.set("discord_dm_id", channel.id);
+        name = `${channel.recipient.username}#${channel.recipient.discriminator} (DM via Discord)`;
+    }
     remote.set("update_name", true);
     remote.set("update_topic", true);
     const creationOpts = {
-      visibility: "public",
+      visibility: "private",
       room_alias_name: alias,
-      name: `[Discord] ${channel.guild.name} #${channel.name}`,
+      name: name,
       topic: channel.topic ? channel.topic : "",
       initial_state: [
         {
