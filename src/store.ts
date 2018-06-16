@@ -134,6 +134,28 @@ export class DiscordStore {
     });
   }
 
+  public get_discord_user_mxids(userId: string): Promise<string[]> {
+    log.silly("SQL", "get_discord_user_mxids => %s", userId);
+    return this.db.allAsync(
+      `
+      SELECT user_id
+      FROM user_id_discord_id
+      WHERE discord_id = $userId;
+      `, {
+        $userId: userId,
+      },
+    ).then( (rows) => {
+      if (rows !== undefined) {
+        return rows.map((row) => row.user_id);
+      } else {
+        return [];
+      }
+    }).catch( (err) => {
+      log.error("DiscordStore", "Error getting discord ids: %s", err);
+      throw err;
+    });
+  }
+
   public get_user_discord_ids(userId: string): Promise<string[]> {
     log.silly("SQL", "get_user_discord_ids => %s", userId);
     return this.db.allAsync(
@@ -225,7 +247,24 @@ export class DiscordStore {
       throw err;
     });
   }
-
+  public get_all_puppeted_mxids(): Promise<string[]> {
+    log.silly("SQL", "get_all_puppeted_mxids");
+    return this.db.allAsync(
+      `
+      SELECT user_id
+      FROM user_id_discord_id;
+      `, {},
+    ).then( (rows) => {
+      if (rows !== undefined) {
+        return rows.map((row) => row.user_id);
+      } else {
+        return [];
+      }
+    }).catch( (err) => {
+      log.error("DiscordStore", "Error getting discord ids: %s", err);
+      throw err;
+    });
+  }
   public Get<T extends IDbData>(dbType: {new(): T; }, params: any): Promise<T|null> {
       const dType = new dbType();
       log.silly("DiscordStore", `get <${dType.constructor.name} with params ${params}>`);

@@ -19,6 +19,7 @@ class DiscordBridgeConfigBridge {
   public enableSelfServiceBridging: boolean;
   public disableEveryoneMention: boolean = false;
   public disableHereMention: boolean = false;
+  public enableDirectMessaging: boolean = false;
 }
 
 class DiscordBridgeConfigDatabase {

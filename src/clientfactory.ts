@@ -1,5 +1,6 @@
 import { DiscordBridgeConfigAuth } from "./config";
 import { DiscordStore } from "./store";
+import { DiscordBot } from "./bot";
 import { Client } from "discord.js";
 import * as log from "npmlog";
 import * as Bluebird from "bluebird";
@@ -11,10 +12,13 @@ export class DiscordClientFactory {
   private store: DiscordStore;
   private botClient: any;
   private clients: Map<string, any>;
-  constructor(store: DiscordStore, config?: DiscordBridgeConfigAuth) {
+  private bridge: DiscordBot;
+
+  constructor(store: DiscordStore, bridge: DiscordBot, config?: DiscordBridgeConfigAuth) {
     this.config = config;
     this.clients = new Map();
     this.store = store;
+    this.bridge = bridge;
   }
 
   public async init(): Promise<void> {
@@ -82,6 +86,7 @@ export class DiscordClientFactory {
       await client.login(token);
       log.verbose("ClientFactory", "Logged in. Storing ", userId);
       this.clients.set(userId, client);
+      this.bridge.BindPuppetedClient(client);
       return client;
     } catch (err) {
       log.warn("ClientFactory", `Could not log ${userId} in. Returning bot user for now.`, err);

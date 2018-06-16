@@ -25,6 +25,10 @@ class ChannelLookupResult {
   public channel: Discord.TextChannel;
   public botUser: boolean;
 }
+class DmChannelLookupResult {
+  public channel: Discord.TextChannel;
+  public botUser: boolean;
+}
 
 export class DiscordBot {
   private config: DiscordBridgeConfig;
@@ -42,7 +46,7 @@ export class DiscordBot {
     this.config = config;
     this.store = store;
     this.sentMessages = [];
-    this.clientFactory = new DiscordClientFactory(store, config.auth);
+    this.clientFactory = new DiscordClientFactory(store, this, config.auth);
     this.msgProcessor = new MessageProcessor(
       new MessageProcessorOpts(this.config.bridge.domain, this),
     );
@@ -105,6 +109,7 @@ export class DiscordBot {
             Math.max(this.config.bridge.presenceInterval, MIN_PRESENCE_UPDATE_DELAY),
         );
       }
+      return this.InitializePuppeting();
     });
   }
 
@@ -140,10 +145,48 @@ export class DiscordBot {
       return [];
     }
   }
-
+  public async LookupDmRoom(user1: string, user2: string): Promise<DmChannelLookupResult> {
+    log.verbose("DiscordBot", `Looking up DM room between ${user1} and ${user2}`);
+    const mxids = await this.store.get_discord_user_mxids(user1);
+    if (mxids.length == 0) {
+      log.verbose("DiscordBot", `Discord user ${user1} isn't puppeted`);
+      throw `no Matrix users for Discord user ${user1}`;
+    }
+    const client = await this.clientFactory.getClient(mxids[0]);
+    const bot_client = await this.clientFactory.getClient();
+    if (client.user.id === this.bot.user.id) {
+      log.verbose("DiscordBot", `Discord user ${user1} isn't logged in.`);
+      throw `couldn't log in client for Discord user ${user1}`;
+    }
+    const recipient = await bot_client.fetchUser(user2);
+    let ret = new DmChannelLookupResult();
+    ret.user = mxids[0];
+    if (recipient.dmChannel) {
+      ret.channel = recipient.dmChannel;
+      return ret;
+    }
+    ret.channel = await recipient.createDM();
+    return ret;
+  }
   public LookupRoom (server: string, room: string, sender?: string): Promise<ChannelLookupResult> {
     const hasSender = sender !== null;
     return this.clientFactory.getClient(sender).then((client) => {
+      if (server === "dm") {
+        if (client.user.id === this.bot.user.id) {
+          throw `Cannot lookup a DM room as the bot`;
+        }
+        const channel = client.channels.get(room);
+        if (!channel) {
+          throw `Channel "${room}" not found`;
+        }
+        if (channel.type != "dm") {
+          throw `Channel "${room}" isn't a DM channel`;
+        }
+        const lookupResult = new ChannelLookupResult();
+        lookupResult.channel = channel;
+        lookupResult.botUser = false;
+        return lookupResult;
+      }
       const guild = client.guilds.get(server);
       if (!guild) {
         throw `Guild "${server}" not found`;
@@ -166,12 +209,21 @@ export class DiscordBot {
     });
   }
 
-  public async ProcessMatrixMsgEvent(event: any, guildId: string, channelId: string): Promise<null> {
+  public async ProcessMatrixMsgEvent(event: any, guildId: string, channelId: string, isDm: boolean = false): Promise<null> {
     const mxClient = this.bridge.getClientFactory().getClientAs();
-    log.verbose("DiscordBot", `Looking up ${guildId}_${channelId}`);
-    const result = await this.LookupRoom(guildId, channelId, event.sender);
-    const chan = result.channel;
-    const botUser = result.botUser;
+    let chan;
+    let botUser;
+    if (isDm) {
+      const result = await this.LookupDmRoom(guildId, channelId);
+      chan = result.channel;
+      botUser = false;
+    }
+    else {
+      log.verbose("DiscordBot", `Looking up ${guildId}_${channelId}`);
+      const result = await this.LookupRoom(guildId, channelId, event.sender);
+      chan = result.channel;
+      botUser = result.botUser;
+    }
     let profile = null;
     if (result.botUser) {
         // We are doing this through webhooks so fetch the user profile.
@@ -283,6 +335,12 @@ export class DiscordBot {
         return Promise.reject("Room(s) not found.");
       }
       const entry = entries[0];
+      const typ = entry.remote.get("discord_type");
+      if (typ === "dm") {
+        return this.LookupDmRoom(entry.remote.get("discord_user1"), entry.remote.get("discord_user2")).then((result) => {
+          return result.channel;
+        });
+      }
       const guild = this.bot.guilds.get(entry.remote.get("discord_guild"));
       if (guild) {
         const channel = this.bot.channels.get(entry.remote.get("discord_channel"));
@@ -295,10 +353,35 @@ export class DiscordBot {
     });
   }
 
+  // Sets up a Matrix<->Discord room that's been inserted into the room store.
+  public async SetupDmRoom(roomId: string): Promise<any> {
+    log.info("DiscordBot", `Setting up DM room ${roomId}`);
+    const entries = await this.getRoomStore().getEntriesByMatrixId(roomId);
+    if (entries.length == 0) {
+      throw Error(`No DM rooms found for ${roomId}`);
+    }
+    if (entries[0].remote.get("discord_type") !== "dm") {
+      throw Error(`SetupDmRoom called on ${roomId}, which isn't a DM room`);
+    }
+    // First, invite the Matrix user...
+    const mxuser = entries[0].remote.get("user1_mxid");
+    await bot.invite(roomId, mxuser);
+    // ...then, invite the Discord ghost user.
+    const intent = this.GetIntentFromDiscordMember(member);
+    const bot = this.bridge.getIntent();
+    await this.UpdateUser(member);
+    // (invite required ofc, since the room is invite-only)
+    await bot.invite(roomId, intent.client.credentials.userId);
+    await intent.join(roomId);
+  }
+
   public InitJoinUser(member: Discord.GuildMember, roomIds: string[]): Promise<any> {
     const intent = this.GetIntentFromDiscordMember(member);
+    const bot = this.bridge.getIntent();
     return this.UpdateUser(member.user).then(() => {
-      return Bluebird.each(roomIds, (roomId) => intent.join(roomId));
+      return Bluebird.each(roomIds, (roomId) => bot.invite(roomId, intent.client.credentials.userId).then(() => {
+        return intent.join(roomId);
+      }));
     }).then(() => {
       return this.UpdateGuildMember(member, roomIds);
     });
@@ -320,6 +403,43 @@ export class DiscordBot {
       await this.store.Insert(dbEmoji);
     }
     return dbEmoji.MxcUrl;
+  }
+
+  public BindPuppetedClient(client: any) {
+    client.on("message", (msg) => {
+      msg.acknowledge();
+      if (msg.channel.type === "dm") {
+        Bluebird.delay(MSG_PROCESS_DELAY).then(() => {
+          this.OnMessage(msg);
+        });
+      }
+    });
+    client.on("messageUpdate", (oldMessage, newMessage) => {
+      if (newMessage.channel.type === "dm") {
+        this.OnMessageUpdate(oldMessage, newMessage);
+      }
+    });
+    if (!this.config.bridge.disableTypingNotifications) {
+      client.on("typingStart", (c, u) => {
+        if (c.type === "dm") {
+          this.OnTyping(c, u, true);
+        }
+      });
+      client.on("typingStop", (c, u) => {
+        if (c.type === "dm") {
+          this.OnTyping(c, u, false);
+        }
+      });
+    }
+  }
+
+  private async InitializePuppeting(): Promise<any> {
+    log.info("DiscordBot", "Initialising puppeting...");
+    const mxids = await this.store.get_all_puppeted_mxids();
+    for (const mxid of mxids) {
+      log.info("DiscordBot", `Initialising puppeting for ${mxid}`);
+      const cli = await this.clientFactory.getClient(mxid);
+    }
   }
 
   private GetRoomIdsFromChannel(channel: Discord.Channel): Promise<string[]> {
