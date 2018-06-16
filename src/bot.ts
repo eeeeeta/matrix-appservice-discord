@@ -26,8 +26,8 @@ class ChannelLookupResult {
   public botUser: boolean;
 }
 class DmChannelLookupResult {
-  public channel: Discord.TextChannel;
-  public botUser: boolean;
+  public channel: Discord.DMChannel;
+  public user: string;
 }
 
 export class DiscordBot {
@@ -225,7 +225,7 @@ export class DiscordBot {
       botUser = result.botUser;
     }
     let profile = null;
-    if (result.botUser) {
+    if (botUser) {
         // We are doing this through webhooks so fetch the user profile.
         profile = await mxClient.getStateEvent(event.room_id, "m.room.member", event.sender);
         if (profile === null) {
@@ -356,20 +356,21 @@ export class DiscordBot {
   // Sets up a Matrix<->Discord room that's been inserted into the room store.
   public async SetupDmRoom(roomId: string): Promise<any> {
     log.info("DiscordBot", `Setting up DM room ${roomId}`);
-    const entries = await this.getRoomStore().getEntriesByMatrixId(roomId);
-    if (entries.length == 0) {
+    const entries = await this.bridge.getRoomStore().getEntriesByMatrixId(roomId);
+    if (entries.length === 0) {
       throw Error(`No DM rooms found for ${roomId}`);
     }
     if (entries[0].remote.get("discord_type") !== "dm") {
       throw Error(`SetupDmRoom called on ${roomId}, which isn't a DM room`);
     }
+    const discord_channel: Discord.DMChannel = await this.GetChannelFromRoomId(roomId);
     // First, invite the Matrix user...
     const mxuser = entries[0].remote.get("user1_mxid");
+    const bot = this.bridge.getIntent();
     await bot.invite(roomId, mxuser);
     // ...then, invite the Discord ghost user.
-    const intent = this.GetIntentFromDiscordMember(member);
-    const bot = this.bridge.getIntent();
-    await this.UpdateUser(member);
+    const intent = this.GetIntentFromDiscordMember(discord_channel.recipient);
+    await this.UpdateUser(discord_channel.recipient);
     // (invite required ofc, since the room is invite-only)
     await bot.invite(roomId, intent.client.credentials.userId);
     await intent.join(roomId);
